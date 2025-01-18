@@ -13,7 +13,7 @@ import os
 import hashlib
 import uuid
 import configparser
-
+import random
 
 config = configparser.ConfigParser()
 config.read("config.cfg")
@@ -25,7 +25,7 @@ PORT = 995
 USER = config.get('PROD', 'USER') 
 PASSWORD = config.get('PROD', 'PASSWORD')
 
-API_KEY = config.get('PROD', 'API_KEY')
+API_KEYS = config.get('PROD', 'API_KEYS').split(";")
 
 
 def png_to_pdf(png_path, pdf_path):
@@ -205,7 +205,9 @@ def main():
 					if pdf_found or png_found or html_content:
 						if html_content and not pdf_found and not png_found:
 							pdf_file = f"{content_uuid}.pdf"
-							html_to_pdf(API_KEY, html_content, pdf_file)
+							random.shuffle(API_KEYS)
+							api_key = API_KEYS[0]
+							html_to_pdf(api_key, html_content, pdf_file)
 							print(f"HTML converted to PDF : {pdf_file}\n")
 
 						metadata = {
