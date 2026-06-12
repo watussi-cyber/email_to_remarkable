@@ -1,3 +1,4 @@
+import argparse
 import subprocess
 from email.header import decode_header
 import platform
@@ -629,6 +630,220 @@ def process_message(msg, list_hash, historique_file, remarkable_ip):
 	return False
 
 
+def _clean_title(raw):
+	"""Décode les entités HTML basiques et supprime les résidus dans un titre."""
+	for entity, char in [('&amp;', '&'), ('&lt;', '<'), ('&gt;', '>'), ('&quot;', '"'), ('&#39;', "'")]:
+		raw = raw.replace(entity, char)
+	return re.sub(r'&[a-zA-Z]+;|&#\d+;', '', raw).strip()
+
+
+def fetch_url_content(url):
+	"""Télécharge une URL et extrait le contenu principal (sans menus/header/footer).
+
+	Stratégie en cascade :
+	  1. trafilatura  — meilleur pour les articles, retourne du HTML structuré
+	  2. readability-lxml — algo Mozilla Readability, bon fallback généraliste
+	  3. HTML brut      — dernier recours si les deux précédents échouent
+	"""
+	print(f"[DEBUG] fetch_url_content() : {url}")
+	headers = {
+		'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:124.0) Gecko/20100101 Firefox/124.0',
+		'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+		'Accept-Language': 'fr,en;q=0.5',
+	}
+	try:
+		response = requests.get(url, headers=headers, timeout=30, allow_redirects=True)
+		response.raise_for_status()
+		content_type = response.headers.get('Content-Type', '')
+		if 'text/html' not in content_type and 'application/xhtml' not in content_type:
+			print(f"[DEBUG] Type de contenu non HTML: {content_type}")
+			return None, None
+		raw_html = response.text
+	except Exception as e:
+		print(f"[DEBUG] fetch_url_content() erreur réseau: {e}")
+		return None, None
+
+	# Extraction du titre depuis le HTML brut (utilisé comme fallback)
+	title_match = re.search(r'<title[^>]*>(.*?)</title>', raw_html, re.IGNORECASE | re.DOTALL)
+	fallback_title = _clean_title(title_match.group(1)) if title_match else url
+
+	# --- 1. Tentative trafilatura ---
+	try:
+		import trafilatura
+		meta = trafilatura.extract_metadata(raw_html, default_url=url)
+		traf_html = trafilatura.extract(
+			raw_html,
+			url=url,
+			output_format='html',
+			include_formatting=True,
+			include_images=True,
+			include_links=False,
+			favor_recall=True,
+		)
+		if traf_html:
+			title = (meta.title if meta and meta.title else fallback_title)
+			print(f"[DEBUG] trafilatura OK, titre: {title[:80]}")
+			# trafilatura retourne un fragment ; on l'enveloppe dans un body minimal
+			html_out = f"<div>{traf_html}</div>"
+			return html_out, title
+		print("[DEBUG] trafilatura n'a rien extrait, passage à readability")
+	except Exception as e:
+		print(f"[DEBUG] trafilatura erreur: {e}")
+
+	# --- 2. Fallback readability-lxml ---
+	try:
+		from readability import Document
+		doc = Document(raw_html)
+		content = doc.summary(html_partial=True)
+		title = _clean_title(doc.title()) or fallback_title
+		if content and len(content) > 200:
+			print(f"[DEBUG] readability OK, titre: {title[:80]}")
+			return content, title
+		print("[DEBUG] readability a retourné trop peu de contenu, passage au HTML brut")
+	except Exception as e:
+		print(f"[DEBUG] readability erreur: {e}")
+
+	# --- 3. Fallback HTML brut ---
+	print("[DEBUG] Utilisation du HTML brut (aucun extracteur n'a fonctionné)")
+	return raw_html, fallback_title
+
+
+def process_url(url, remarkable_ip):
+	"""Télécharge une URL, la convertit en PDF stylisé et l'envoie sur la reMarkable.
+	Retourne True si envoyé avec succès, False sinon."""
+	content_uuid = uuid.uuid4()
+	print(f"[DEBUG] process_url() UUID={content_uuid}, URL={url}")
+
+	html_content, title = fetch_url_content(url)
+	if not html_content:
+		print(f"[DEBUG] Impossible de récupérer le contenu de {url}")
+		return False
+
+	domain_match = re.search(r'https?://([^/]+)', url)
+	domain = domain_match.group(1) if domain_match else url
+
+	now = datetime.now()
+	date_str = f"{FRENCH_DAYS[now.weekday()]} {now.day} {FRENCH_MONTHS[now.month - 1]} {now.year}"
+
+	styled_html = apply_academic_style(html_content, subject=title, sender=domain, date=date_str)
+
+	pdf_path = f"{content_uuid}.pdf"
+	api_key = random.choice(API_KEYS)
+	if not html_to_pdf(api_key, styled_html, pdf_path):
+		print(f"[DEBUG] Conversion PDF échouée pour {url}")
+		cleanup_uuid_files(content_uuid)
+		return False
+
+	metadata = {
+		"deleted": False,
+		"lastModified": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+		"lastOpened": 0,
+		"lastOpenedPage": 0,
+		"metadataModified": True,
+		"modified": True,
+		"parent": "",
+		"pinned": False,
+		"synced": True,
+		"type": "DocumentType",
+		"version": 1,
+		"visibleName": title
+	}
+	with open(f"{content_uuid}.metadata", 'w') as f:
+		json.dump(metadata, f, indent=2)
+
+	content = {
+		"extraMetadata": {},
+		"fileType": "pdf",
+		"fontName": "Noto Sans",
+		"lastOpenedPage": 0,
+		"lineHeight": -1,
+		"margins": 100,
+		"orientation": "portrait",
+		"pageCount": 0,
+		"textScale": 1,
+		"transform": {}
+	}
+	with open(f"{content_uuid}.content", 'w') as f:
+		json.dump(content, f, indent=2)
+
+	files_to_send = glob.glob(f"{content_uuid}*")
+	print(f"[DEBUG] Envoi SCP de {files_to_send} vers reMarkable...")
+	scp_cmd = ["scp", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"] \
+		+ files_to_send + [f"root@{remarkable_ip}:/home/root/.local/share/remarkable/xochitl/"]
+	result = subprocess.run(scp_cmd, capture_output=True, text=True)
+	print(f"[DEBUG] Code retour SCP: {result.returncode}")
+	if result.returncode != 0:
+		print(f"[DEBUG] SCP stderr: {result.stderr}")
+
+	cleanup_uuid_files(content_uuid)
+	return result.returncode == 0
+
+
+def main_urls():
+	"""Mode URLs : lit URLS_QUEUE.txt, convertit chaque URL en PDF et l'envoie sur la reMarkable.
+	Les URLs envoyées avec succès sont retirées du fichier ; les échouées y restent."""
+	print("\n" + "=" * 60)
+	print(f"[DEBUG] main_urls() démarrée à {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+	print("=" * 60)
+
+	dir_path = os.path.dirname(os.path.abspath(__file__)) + '/'
+	queue_path = dir_path + 'URLS_QUEUE.txt'
+
+	if not os.path.exists(queue_path):
+		print(f"[DEBUG] Fichier {queue_path} introuvable")
+		return
+
+	with open(queue_path, 'r') as f:
+		urls = [line.strip() for line in f if line.strip() and line.strip().startswith('http')]
+
+	if not urls:
+		print("[DEBUG] Aucune URL à traiter dans URLS_QUEUE.txt")
+		return
+
+	print(f"[DEBUG] {len(urls)} URL(s) à traiter")
+
+	remarkable_ip = find_remarkable_ip(REMARKABLE_MAC)
+	if not remarkable_ip:
+		print("reMarkable not found on network (MAC not in ARP table)")
+		return
+
+	if not ping_ip(remarkable_ip):
+		print("Remarkable is down")
+		return
+	print("Remarkable is up")
+
+	sent_urls = []
+	failed_urls = []
+
+	for url in urls:
+		print(f"\n### Processing URL: {url}")
+		try:
+			if process_url(url, remarkable_ip):
+				sent_urls.append(url)
+				print(f"[DEBUG] URL envoyée avec succès: {url}")
+			else:
+				failed_urls.append(url)
+		except Exception as e:
+			import traceback
+			print(f"Error processing URL {url}: {e}")
+			print(f"[DEBUG] Traceback:\n{traceback.format_exc()}")
+			failed_urls.append(url)
+
+	# Mise à jour du fichier : on ne conserve que les URLs en échec
+	with open(queue_path, 'w') as f:
+		for url in failed_urls:
+			f.write(url + '\n')
+
+	if sent_urls:
+		print(f"\n[DEBUG] {len(sent_urls)} URL(s) envoyée(s), redémarrage xochitl...")
+		ssh_cmd = ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+		           f"root@{remarkable_ip}", "systemctl restart xochitl"]
+		result = subprocess.run(ssh_cmd, capture_output=True, text=True)
+		print(f"[DEBUG] Code retour SSH: {result.returncode}")
+
+	print(f"\n[DEBUG] Résumé: {len(sent_urls)} envoyée(s), {len(failed_urls)} en échec")
+
+
 def main():
 	print("\n" + "=" * 60)
 	print(f"[DEBUG] main() démarrée à {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -713,18 +928,27 @@ def main():
 
 
 if __name__ == "__main__":
+	parser = argparse.ArgumentParser(description='email_to_remarkable')
+	parser.add_argument('--urls', action='store_true',
+	                    help='Traiter les URLs depuis URLS_QUEUE.txt (one-shot) au lieu de relever les emails')
+	args = parser.parse_args()
+
 	print("=" * 60)
 	print("[DEBUG] Script email_to_remarkable démarré")
 	print(f"[DEBUG] PID: {os.getpid()}")
 	print(f"[DEBUG] Python: {platform.python_version()}, OS: {platform.system()} {platform.release()}")
-	print(f"[DEBUG] Intervalle entre relèves: {CHECK_INTERVAL}s")
 	print("=" * 60)
-	loop_count = 0
-	while True:
-		loop_count += 1
-		print(f"\n{'=' * 60}")
-		print(f"[DEBUG] Boucle #{loop_count} à {datetime.now().strftime('%H:%M:%S')}")
-		print('=' * 60)
-		main()
-		print(f'\n\nBreak {CHECK_INTERVAL} seconds')
-		time.sleep(CHECK_INTERVAL)
+
+	if args.urls:
+		main_urls()
+	else:
+		print(f"[DEBUG] Intervalle entre relèves: {CHECK_INTERVAL}s")
+		loop_count = 0
+		while True:
+			loop_count += 1
+			print(f"\n{'=' * 60}")
+			print(f"[DEBUG] Boucle #{loop_count} à {datetime.now().strftime('%H:%M:%S')}")
+			print('=' * 60)
+			main()
+			print(f'\n\nBreak {CHECK_INTERVAL} seconds')
+			time.sleep(CHECK_INTERVAL)

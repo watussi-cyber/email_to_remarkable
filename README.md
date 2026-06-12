@@ -1,12 +1,17 @@
 # Email to reMarkable
 
-Send an HTML, PDF, or PNG file by email and receive it on your reMarkable.
+Send content to your reMarkable — by email or by URL — and have it appear on
+your tablet in a clean, e-ink-optimised layout.
 
-The reMarkable tablet is a great product, but I've always been frustrated by the lack of a feature to send content to my tablet via email.
-
-This Python script bridges that gap: it watches a dedicated mailbox and pushes everything it receives to the tablet over the local network.
+The reMarkable tablet is a great product, but it lacks a built-in way to push
+arbitrary web content to the device. This Python script bridges that gap: it
+watches a dedicated mailbox (email mode) or reads a queue of URLs (URL mode),
+converts the content to a well-formatted PDF and uploads it over the local
+network.
 
 ## Features
+
+### Email mode (default)
 
 - **PDF attachments** are sent as-is.
 - **PNG attachments** are converted to PDF (via Pillow).
@@ -21,13 +26,37 @@ This Python script bridges that gap: it watches a dedicated mailbox and pushes e
   - hidden preheaders, tracking pixels, decorative separators and invisible
     padding removed;
   - a document header with subject, sender and date (in French).
-- **Automatic tablet discovery**: the reMarkable is located on the LAN by its
-  MAC address (cached IP → ARP table → full subnet ping scan as a last resort).
 - **Deduplication**: each processed email is recorded (SHA-256 hash) in
   `historique_file.txt` and never sent twice.
 - **Mailbox cleanup**: emails are deleted from the POP3 server once the
   transfer to the tablet has succeeded (deletion is only committed when the
   POP3 session ends cleanly, so nothing is lost if the script crashes).
+
+### URL mode (`--urls`)
+
+Reads a list of URLs from `URLS_QUEUE.txt` (one URL per line), fetches each
+page, strips away the noise (navigation menus, headers, footers, sidebars…)
+and pushes the main article content to the tablet using the same academic PDF
+style as email mode.
+
+Boilerplate removal uses a two-stage cascade:
+
+1. **trafilatura** — primary extractor, purpose-built for news articles and
+   blog posts; returns structured HTML and extracts the page title from
+   Open Graph / meta tags.
+2. **readability-lxml** — Mozilla Readability algorithm (the same engine
+   behind Firefox's reader view), used as a fallback when trafilatura finds
+   nothing.
+3. **Raw HTML** — last resort if both extractors fail (same behaviour as
+   before this feature was added).
+
+After processing, successfully sent URLs are removed from `URLS_QUEUE.txt`;
+failed ones remain so the next run can retry them.
+
+### Common
+
+- **Automatic tablet discovery**: the reMarkable is located on the LAN by its
+  MAC address (cached IP → ARP table → full subnet ping scan as a last resort).
 - After new documents are uploaded, the xochitl service is restarted over SSH
   so they appear in the tablet's library.
 
@@ -58,7 +87,23 @@ This Python script bridges that gap: it watches a dedicated mailbox and pushes e
    | `CHECK_INTERVAL` | seconds between two mailbox checks (default: 600) |
    | `FONT` | PDF font: `stix-two` (default), `latin-modern`, `eb-garamond`, `crimson`, `georgia` |
 
-4. Run `python3 main.py`
+4. Run the script:
+
+   ```bash
+   # Email mode — polls the mailbox every CHECK_INTERVAL seconds (infinite loop)
+   python3 main.py
+
+   # URL mode — processes URLS_QUEUE.txt once and exits
+   python3 main.py --urls
+   ```
+
+   **`URLS_QUEUE.txt` format**: one URL per line, lines not starting with
+   `http` are ignored (empty lines, comments).
+
+   ```
+   https://example.com/article-one
+   https://example.com/article-two
+   ```
 
 Let the script run: on every cycle it checks whether the tablet is reachable,
 fetches new emails, converts them and uploads them. The detected IP of the
