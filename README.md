@@ -39,16 +39,26 @@ page, strips away the noise (navigation menus, headers, footers, sidebars…)
 and pushes the main article content to the tablet using the same academic PDF
 style as email mode.
 
-Boilerplate removal uses a two-stage cascade:
+Boilerplate removal uses a cascade of four stages:
 
-1. **trafilatura** — primary extractor, purpose-built for news articles and
-   blog posts; returns structured HTML and extracts the page title from
-   Open Graph / meta tags.
-2. **readability-lxml** — Mozilla Readability algorithm (the same engine
-   behind Firefox's reader view), used as a fallback when trafilatura finds
-   nothing.
-3. **Raw HTML** — last resort if both extractors fail (same behaviour as
-   before this feature was added).
+1. **lxml pre-processing** — runs before any extractor. If the page has an
+   `<article>` or `<main>` tag, only that subtree is kept (everything else —
+   navigation, sidebars, footer — is discarded at source). Otherwise `<nav>`,
+   `<aside>`, `<footer>` and any element whose `class`/`id` contains a
+   navigation keyword (menu, sidebar, cookie banner, ads, pagination…) are
+   stripped from the document.
+2. **trafilatura** — applied to the pre-processed HTML; purpose-built for news
+   articles and blog posts, returns structured HTML and extracts the page title
+   from Open Graph / meta tags.
+3. **readability-lxml** — Mozilla Readability algorithm (the same engine behind
+   Firefox's reader view), used as a fallback when trafilatura finds nothing.
+4. **Pre-processed HTML** — last resort if both extractors fail; navigation has
+   already been removed by step 1, so even this fallback is reasonably clean.
+
+> **Note on paywalled or bot-protected sites** (e.g. Le Monde): these return
+> an error page before any article content, so there is nothing to extract.
+> The only workaround would be a headless browser with an authenticated
+> session, which is out of scope for this script.
 
 After processing, successfully sent URLs are removed from `URLS_QUEUE.txt`;
 failed ones remain so the next run can retry them.
