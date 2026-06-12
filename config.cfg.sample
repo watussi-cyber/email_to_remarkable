@@ -1,5 +1,5 @@
 [PROD]
-REMARKABLE_IP : 0.0.0.0
+REMARKABLE_MAC : 00:00:00:00:00:00
 
 # Email configuration
 HOST = my_host
@@ -9,3 +9,10 @@ PASSWORD = my_password
 
 # html2pdfrocket.com API
 API_KEY = my_api_key;my_api_key2;my_api_key3
+
+# Intervalle entre deux releves de la boite mail, en secondes (defaut : 600)
+# CHECK_INTERVAL = 600
+
+# Police des emails HTML convertis en PDF (defaut : stix-two)
+# Valeurs : stix-two, latin-modern, eb-garamond, crimson, georgia
+# FONT = stix-two

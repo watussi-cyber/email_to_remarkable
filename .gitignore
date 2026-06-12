@@ -1,0 +1,19 @@
+# Secrets & données locales
+config.cfg
+
+# Python
+__pycache__/
+*.pyc
+remarkable.venv/
+
+# Fichiers de travail / dev
+main_dev.py
+main_save.py
+historique_file_dev.txt
+email_sample_*.html
+
+# Artefacts de test et fichiers temporaires du script
+test_*.pdf
+preview_*.png
+*.metadata
+*.content
