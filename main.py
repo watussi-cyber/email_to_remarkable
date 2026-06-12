@@ -637,19 +637,92 @@ def _clean_title(raw):
 	return re.sub(r'&[a-zA-Z]+;|&#\d+;', '', raw).strip()
 
 
+# Mots-clés dans class/id qui trahissent un élément de navigation ou chrome de page.
+# Volontairement conservateurs : on évite les faux positifs sur du contenu éditorial.
+_NAV_KEYWORDS = [
+	'menu', 'navbar', 'nav-bar', 'navigation', 'breadcrumb', 'breadcrumbs',
+	'sidebar', 'side-bar', 'side_bar',
+	'cookie', 'consent', 'gdpr',
+	'banner', 'overlay', 'modal', 'popup', 'pop-up',
+	'advert', 'advertisement', 'ads-', '-ads', 'pub-',
+	'social-share', 'share-bar', 'sharebar',
+	'pagination', 'pager',
+	'skip-link', 'skipnav',
+	'site-header', 'site-footer', 'site-nav',
+	'top-bar', 'bottom-bar',
+]
+
+
+def _preprocess_html(raw_html):
+	"""Supprime le chrome de page (nav, menus, sidebars…) avant extraction du contenu.
+
+	Stratégie :
+	  1. Si <article> ou <main> existe, on extrait uniquement le plus grand
+	     (en volume de texte) — ce qui exclut d'emblée toute la navigation.
+	  2. Sinon, on supprime agressivement <nav>, <aside>, les éléments dont
+	     le class/id contient un mot-clé de navigation, puis on isole <body>.
+	"""
+	try:
+		from lxml import html as lxml_html
+		doc = lxml_html.document_fromstring(raw_html)
+
+		# 1. Priorité aux balises sémantiques de contenu
+		for tag in ('article', 'main'):
+			candidates = doc.xpath(f'//{tag}')
+			if candidates:
+				best = max(candidates, key=lambda el: len(el.text_content()))
+				extracted = lxml_html.tostring(best, encoding='unicode')
+				print(f"[DEBUG] _preprocess_html: <{tag}> trouvé ({len(extracted)} chars)")
+				return extracted
+
+		# 2. Pas de balise sémantique : nettoyage ciblé
+		# Suppression des balises structurelles de navigation
+		for tag in ('nav', 'aside', 'footer'):
+			for el in doc.xpath(f'//{tag}'):
+				parent = el.getparent()
+				if parent is not None:
+					parent.remove(el)
+
+		# Suppression des éléments dont class ou id contiennent un mot-clé de nav
+		for el in doc.xpath('//*[@class or @id]'):
+			class_id = (el.get('class', '') + ' ' + el.get('id', '')).lower()
+			if any(kw in class_id for kw in _NAV_KEYWORDS):
+				parent = el.getparent()
+				if parent is not None:
+					try:
+						parent.remove(el)
+					except Exception:
+						pass
+
+		# On retourne le <body> nettoyé (ou le document entier si pas de body)
+		body = doc.find('.//body')
+		root = body if body is not None else doc
+		cleaned = lxml_html.tostring(root, encoding='unicode')
+		print(f"[DEBUG] _preprocess_html: nettoyage générique, {len(raw_html)} → {len(cleaned)} chars")
+		return cleaned
+
+	except Exception as e:
+		print(f"[DEBUG] _preprocess_html erreur lxml: {e}")
+		return raw_html
+
+
 def fetch_url_content(url):
 	"""Télécharge une URL et extrait le contenu principal (sans menus/header/footer).
 
 	Stratégie en cascade :
-	  1. trafilatura  — meilleur pour les articles, retourne du HTML structuré
-	  2. readability-lxml — algo Mozilla Readability, bon fallback généraliste
-	  3. HTML brut      — dernier recours si les deux précédents échouent
+	  0. _preprocess_html()  — pré-filtre lxml (article/main, suppression nav)
+	  1. trafilatura          — meilleur pour les articles, retourne du HTML structuré
+	  2. readability-lxml     — algo Mozilla Readability, bon fallback généraliste
+	  3. HTML pré-traité      — dernier recours (déjà nettoyé de la nav)
 	"""
 	print(f"[DEBUG] fetch_url_content() : {url}")
 	headers = {
-		'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:124.0) Gecko/20100101 Firefox/124.0',
-		'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-		'Accept-Language': 'fr,en;q=0.5',
+		'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+		'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+		'Accept-Language': 'fr-FR,fr;q=0.9,en;q=0.5',
+		'Accept-Encoding': 'gzip, deflate, br',
+		'DNT': '1',
+		'Upgrade-Insecure-Requests': '1',
 	}
 	try:
 		response = requests.get(url, headers=headers, timeout=30, allow_redirects=True)
@@ -663,16 +736,19 @@ def fetch_url_content(url):
 		print(f"[DEBUG] fetch_url_content() erreur réseau: {e}")
 		return None, None
 
-	# Extraction du titre depuis le HTML brut (utilisé comme fallback)
+	# Titre extrait du HTML brut (utilisé comme fallback)
 	title_match = re.search(r'<title[^>]*>(.*?)</title>', raw_html, re.IGNORECASE | re.DOTALL)
 	fallback_title = _clean_title(title_match.group(1)) if title_match else url
+
+	# Pré-traitement : suppression du chrome de page avant les extracteurs
+	preprocessed = _preprocess_html(raw_html)
 
 	# --- 1. Tentative trafilatura ---
 	try:
 		import trafilatura
 		meta = trafilatura.extract_metadata(raw_html, default_url=url)
 		traf_html = trafilatura.extract(
-			raw_html,
+			preprocessed,
 			url=url,
 			output_format='html',
 			include_formatting=True,
@@ -683,9 +759,7 @@ def fetch_url_content(url):
 		if traf_html:
 			title = (meta.title if meta and meta.title else fallback_title)
 			print(f"[DEBUG] trafilatura OK, titre: {title[:80]}")
-			# trafilatura retourne un fragment ; on l'enveloppe dans un body minimal
-			html_out = f"<div>{traf_html}</div>"
-			return html_out, title
+			return f"<div>{traf_html}</div>", title
 		print("[DEBUG] trafilatura n'a rien extrait, passage à readability")
 	except Exception as e:
 		print(f"[DEBUG] trafilatura erreur: {e}")
@@ -693,19 +767,21 @@ def fetch_url_content(url):
 	# --- 2. Fallback readability-lxml ---
 	try:
 		from readability import Document
-		doc = Document(raw_html)
+		doc = Document(preprocessed)
 		content = doc.summary(html_partial=True)
-		title = _clean_title(doc.title()) or fallback_title
+		title = _clean_title(doc.title())
+		if not title or title == '[no-title]':
+			title = fallback_title
 		if content and len(content) > 200:
 			print(f"[DEBUG] readability OK, titre: {title[:80]}")
 			return content, title
-		print("[DEBUG] readability a retourné trop peu de contenu, passage au HTML brut")
+		print("[DEBUG] readability a retourné trop peu de contenu, passage au HTML pré-traité")
 	except Exception as e:
 		print(f"[DEBUG] readability erreur: {e}")
 
-	# --- 3. Fallback HTML brut ---
-	print("[DEBUG] Utilisation du HTML brut (aucun extracteur n'a fonctionné)")
-	return raw_html, fallback_title
+	# --- 3. Fallback HTML pré-traité (déjà sans nav) ---
+	print("[DEBUG] Utilisation du HTML pré-traité (aucun extracteur n'a fonctionné)")
+	return preprocessed, fallback_title
 
 
 def process_url(url, remarkable_ip):
