@@ -247,6 +247,12 @@ def apply_academic_style(html_content, subject=None, sender=None, date=None, fon
 		r'<(?P<tag>span|td|p|div|a)\b(?P<attrs>[^>]*style\s*=\s*["\'][^"\']*font-size\s*:\s*(?P<size>[\d.]+)\s*(?P<unit>px|pt)[^"\']*["\'][^>]*)>',
 		_tag_heading, html_content, flags=re.IGNORECASE)
 
+	# Suppression des éléments qui peuvent faire planter wkhtmltopdf :
+	# scripts, iframes, objects, embeds — ils ne produisent rien d'utile dans un PDF
+	for dangerous_tag in ('script', 'noscript', 'iframe', 'object', 'embed'):
+		html_content = re.sub(rf'<{dangerous_tag}\b[^>]*>.*?</{dangerous_tag}>', '', html_content, flags=re.IGNORECASE | re.DOTALL)
+		html_content = re.sub(rf'<{dangerous_tag}\b[^>]*/>', '', html_content, flags=re.IGNORECASE)
+
 	# Suppression des styles existants pour éviter les conflits :
 	# blocs <style>, feuilles externes <link rel=stylesheet>, attributs de présentation
 	html_content = re.sub(r'<style\b[^>]*>.*?</style>', '', html_content, flags=re.IGNORECASE | re.DOTALL)
@@ -285,7 +291,7 @@ def apply_academic_style(html_content, subject=None, sender=None, date=None, fon
 		header_html = f'<div class="email-header">{"".join(header_parts)}</div>'
 
 	styled = f"""<!DOCTYPE html>
-<html>
+<html lang="fr">
 <head>
 <meta charset="utf-8">
 <style>{css}</style>
@@ -451,37 +457,53 @@ def ping_ip(ip_address, timeout=5):
 		return False
 
 
-def html_to_pdf(api_key, html_content, output_pdf):
+def html_to_pdf(api_keys, html_content, output_pdf):
 	print(f"[DEBUG] html_to_pdf() appelé, longueur HTML={len(html_content)} caractères, output={output_pdf}")
 	api_url = "https://api.html2pdfrocket.com/pdf"
-	data = {
-		"apikey": api_key,
-		"value": html_content,
-		# Mise en page : les marges sont gérées par le CSS (padding du body),
-		# on réduit donc celles du convertisseur au minimum.
-		"PageSize": "A4",
-		"MarginLeft": "5",
-		"MarginRight": "5",
-		"MarginTop": "8",
-		"MarginBottom": "8",
-		"UseGrayscale": "true",
-		# Sans cela wkhtmltopdf rétrécit la page pour faire tenir les
-		# layouts larges -> police minuscule sur la reMarkable
-		"EnableSmartShrinking": "false",
-	}
 
-	try:
-		print(f"[DEBUG] Envoi requête API html2pdfrocket (clé={api_key[:8]}...)")
-		response = requests.post(api_url, data=data, timeout=120)
-		print(f"[DEBUG] Réponse API: status={response.status_code}, taille={len(response.content)} octets")
-		if response.status_code == 200:
-			with open(output_pdf, 'wb') as pdf_file:
-				pdf_file.write(response.content)
-			print(f"PDF conversion successful : {output_pdf}")
-			return True
-		print(f"Error during PDF conversion: {response.status_code} - {response.text}")
-	except Exception as e:
-		print(f"Error : {e}")
+	if isinstance(api_keys, str):
+		api_keys = [api_keys]
+
+	keys_to_try = list(api_keys)
+	random.shuffle(keys_to_try)
+
+	for api_key in keys_to_try:
+		data = {
+			"apikey": api_key,
+			"value": html_content,
+			# Mise en page : les marges sont gérées par le CSS (padding du body),
+			# on réduit donc celles du convertisseur au minimum.
+			"PageSize": "A4",
+			"MarginLeft": "5",
+			"MarginRight": "5",
+			"MarginTop": "8",
+			"MarginBottom": "8",
+			"UseGrayscale": "true",
+			# Sans cela wkhtmltopdf rétrécit la page pour faire tenir les
+			# layouts larges -> police minuscule sur la reMarkable
+			"EnableSmartShrinking": "false",
+		}
+		try:
+			print(f"[DEBUG] Envoi requête API html2pdfrocket (clé={api_key[:8]}..., HTML={len(data['value'])} chars)")
+			response = requests.post(api_url, data=data, timeout=120)
+			print(f"[DEBUG] Réponse API: status={response.status_code}, taille={len(response.content)} octets")
+			if response.status_code == 200:
+				if not response.content.startswith(b'%PDF'):
+					print(f"[ERROR] Réponse non-PDF reçue (clé={api_key[:8]}...): {response.content[:300]}")
+					continue
+				with open(output_pdf, 'wb') as pdf_file:
+					pdf_file.write(response.content)
+				print(f"PDF conversion successful : {output_pdf}")
+				return True
+			print(f"Error during PDF conversion (clé={api_key[:8]}...): {response.status_code} - {response.text}")
+			# Si la limite mensuelle est atteinte, on passe à la clé suivante
+			if response.status_code == 400 and "monthly volume limit" in response.text:
+				print(f"[DEBUG] Limite mensuelle atteinte pour la clé {api_key[:8]}..., essai avec la suivante")
+				continue
+		except Exception as e:
+			print(f"Error : {e}")
+		return False
+	print("[ERROR] Toutes les clés API ont atteint leur limite mensuelle.")
 	return False
 
 
@@ -571,8 +593,7 @@ def process_message(msg, list_hash, historique_file, remarkable_ip):
 			sender=email_message.get('From', ''),
 			date=format_date_fr(email_message.get('Date', '')),
 		)
-		api_key = random.choice(API_KEYS)
-		if not html_to_pdf(api_key, styled_html, pdf_path):
+		if not html_to_pdf(API_KEYS, styled_html, pdf_path):
 			print("[DEBUG] Conversion HTML échouée, email ignoré pour ce cycle")
 			cleanup_uuid_files(content_uuid)
 			return False
@@ -720,7 +741,7 @@ def fetch_url_content(url):
 		'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
 		'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
 		'Accept-Language': 'fr-FR,fr;q=0.9,en;q=0.5',
-		'Accept-Encoding': 'gzip, deflate, br',
+		'Accept-Encoding': 'gzip, deflate',  # requests ne décompresse pas Brotli
 		'DNT': '1',
 		'Upgrade-Insecure-Requests': '1',
 	}
@@ -804,8 +825,7 @@ def process_url(url, remarkable_ip):
 	styled_html = apply_academic_style(html_content, subject=title, sender=domain, date=date_str)
 
 	pdf_path = f"{content_uuid}.pdf"
-	api_key = random.choice(API_KEYS)
-	if not html_to_pdf(api_key, styled_html, pdf_path):
+	if not html_to_pdf(API_KEYS, styled_html, pdf_path):
 		print(f"[DEBUG] Conversion PDF échouée pour {url}")
 		cleanup_uuid_files(content_uuid)
 		return False

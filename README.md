@@ -60,6 +60,13 @@ Boilerplate removal uses a cascade of four stages:
 > The only workaround would be a headless browser with an authenticated
 > session, which is out of scope for this script.
 
+> **Note on Brotli-compressed sites**: some servers (e.g. Le Grand Continent)
+> respond with Brotli (`br`) content encoding. The script deliberately advertises
+> only `gzip, deflate` in its `Accept-Encoding` header so that servers always
+> respond with a format that `requests` can decompress natively. Advertising `br`
+> without the `brotli` package installed causes the raw compressed bytes to be
+> passed through as text, resulting in a garbled PDF.
+
 After processing, successfully sent URLs are removed from `URLS_QUEUE.txt`;
 failed ones remain so the next run can retry them.
 
@@ -77,8 +84,9 @@ failed ones remain so the next run can retry them.
 - An SSH key configured on your reMarkable tablet (the script uses
   `scp`/`ssh` as `root`).
 - An API key from the html2pdfrocket.com service (free for up to 200
-  conversions per month). Several keys can be configured (separated by `;`),
-  one is picked at random for each conversion.
+  conversions per month). Several keys can be configured (separated by `;`);
+  they are tried in random order, and the next one is automatically used when
+  the current one has reached its monthly limit.
 - A macOS or Linux machine.
 - A dedicated email address (POP3 with SSL) used only for sending content to
   your reMarkable.
