@@ -457,6 +457,68 @@ def ping_ip(ip_address, timeout=5):
 		return False
 
 
+_BLACKLIST_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.api_key_blacklist.json')
+_BLACKLIST_DURATION = 24 * 3600
+
+
+def _blacklist_load():
+	try:
+		with open(_BLACKLIST_FILE) as f:
+			return json.load(f)
+	except (FileNotFoundError, json.JSONDecodeError):
+		return {}
+
+
+def _blacklist_add(api_key):
+	bl = _blacklist_load()
+	bl[api_key] = time.time()
+	with open(_BLACKLIST_FILE, 'w') as f:
+		json.dump(bl, f)
+	print(f"[DEBUG] Clé {api_key[:8]}... blacklistée pour 24h")
+
+
+def _blacklist_active(api_key):
+	bl = _blacklist_load()
+	ts = bl.get(api_key)
+	if ts is None:
+		return False
+	elapsed = time.time() - ts
+	if elapsed < _BLACKLIST_DURATION:
+		print(f"[DEBUG] Clé {api_key[:8]}... blacklistée encore {(_BLACKLIST_DURATION - elapsed) / 3600:.1f}h — ignorée")
+		return True
+	# Expirée : on la retire
+	del bl[api_key]
+	with open(_BLACKLIST_FILE, 'w') as f:
+		json.dump(bl, f)
+	return False
+
+
+def _html_to_pdf_local(html_content, output_pdf):
+	"""Fallback local via Playwright/Chromium quand toutes les clés API sont épuisées."""
+	try:
+		from playwright.sync_api import sync_playwright
+	except ImportError:
+		print("[ERROR] playwright non installé. Lancez : py -m pip install playwright && py -m playwright install chromium")
+		return False
+	try:
+		print("[DEBUG] Fallback Playwright/Chromium local")
+		with sync_playwright() as p:
+			browser = p.chromium.launch()
+			page = browser.new_page()
+			page.set_content(html_content, wait_until="domcontentloaded")
+			page.pdf(path=output_pdf, format="A4", print_background=True,
+			         margin={"top": "8mm", "bottom": "8mm", "left": "5mm", "right": "5mm"})
+			browser.close()
+		if os.path.exists(output_pdf) and os.path.getsize(output_pdf) > 0:
+			print(f"[DEBUG] Fallback Playwright réussi : {output_pdf}")
+			return True
+		print("[ERROR] Fallback Playwright : fichier vide ou absent")
+		return False
+	except Exception as e:
+		print(f"[ERROR] Fallback Playwright : {e}")
+		return False
+
+
 def html_to_pdf(api_keys, html_content, output_pdf):
 	print(f"[DEBUG] html_to_pdf() appelé, longueur HTML={len(html_content)} caractères, output={output_pdf}")
 	api_url = "https://api.html2pdfrocket.com/pdf"
@@ -464,8 +526,11 @@ def html_to_pdf(api_keys, html_content, output_pdf):
 	if isinstance(api_keys, str):
 		api_keys = [api_keys]
 
-	keys_to_try = list(api_keys)
+	keys_to_try = [k for k in api_keys if not _blacklist_active(k)]
 	random.shuffle(keys_to_try)
+
+	if not keys_to_try:
+		print("[DEBUG] Toutes les clés sont blacklistées — passage direct au fallback local.")
 
 	for api_key in keys_to_try:
 		data = {
@@ -496,15 +561,18 @@ def html_to_pdf(api_keys, html_content, output_pdf):
 				print(f"PDF conversion successful : {output_pdf}")
 				return True
 			print(f"Error during PDF conversion (clé={api_key[:8]}...): {response.status_code} - {response.text}")
-			# Si la limite mensuelle est atteinte, on passe à la clé suivante
 			if response.status_code == 400 and "monthly volume limit" in response.text:
-				print(f"[DEBUG] Limite mensuelle atteinte pour la clé {api_key[:8]}..., essai avec la suivante")
+				_blacklist_add(api_key)
 				continue
+			# Autre erreur HTTP : on blackliste aussi pour éviter les appels inutiles
+			_blacklist_add(api_key)
 		except Exception as e:
 			print(f"Error : {e}")
-		return False
-	print("[ERROR] Toutes les clés API ont atteint leur limite mensuelle.")
-	return False
+			_blacklist_add(api_key)
+		continue
+
+	print("[ERROR] API html2pdfrocket indisponible pour toutes les clés — tentative fallback local.")
+	return _html_to_pdf_local(html_content, output_pdf)
 
 
 def cleanup_uuid_files(content_uuid):

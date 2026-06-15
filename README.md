@@ -86,7 +86,13 @@ failed ones remain so the next run can retry them.
 - An API key from the html2pdfrocket.com service (free for up to 200
   conversions per month). Several keys can be configured (separated by `;`);
   they are tried in random order, and the next one is automatically used when
-  the current one has reached its monthly limit.
+  the current one has reached its monthly limit. Keys that fail (monthly limit
+  reached or any HTTP error) are blacklisted for 24 hours in
+  `.api_key_blacklist.json` so they are never retried unnecessarily. When all
+  keys are blacklisted, the script falls back to a local Playwright/Chromium
+  renderer (no API needed).
+- **Playwright** (`pip install playwright && playwright install chromium`) for
+  the local PDF fallback when all API keys are exhausted.
 - A macOS or Linux machine.
 - A dedicated email address (POP3 with SSL) used only for sending content to
   your reMarkable.

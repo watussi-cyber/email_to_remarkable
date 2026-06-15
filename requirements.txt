@@ -2,3 +2,4 @@ requests
 Pillow
 trafilatura
 readability-lxml
+playwright
