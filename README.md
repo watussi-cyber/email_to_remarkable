@@ -91,8 +91,16 @@ failed ones remain so the next run can retry them.
   `.api_key_blacklist.json` so they are never retried unnecessarily. When all
   keys are blacklisted, the script falls back to a local Playwright/Chromium
   renderer (no API needed).
-- **Playwright** (`pip install playwright && playwright install chromium`) for
-  the local PDF fallback when all API keys are exhausted.
+- **Playwright** for the local PDF fallback when all API keys are exhausted:
+  ```bash
+  pip install playwright
+  python3 -m playwright install chromium
+  ```
+  If the script runs as root (e.g. via `sudo crontab`), install under root:
+  ```bash
+  sudo pip3 install playwright --break-system-packages
+  sudo python3 -m playwright install chromium
+  ```
 - A macOS or Linux machine.
 - A dedicated email address (POP3 with SSL) used only for sending content to
   your reMarkable.
@@ -111,14 +119,19 @@ failed ones remain so the next run can retry them.
    | `CHECK_INTERVAL` | seconds between two mailbox checks (default: 600) |
    | `FONT` | PDF font: `stix-two` (default), `latin-modern`, `eb-garamond`, `crimson`, `georgia` |
 
-4. Run the script:
+3. Install Playwright's Chromium browser (needed for the local PDF fallback):
+   ```bash
+   python3 -m playwright install chromium
+   ```
+
+4. Run the script with unbuffered output (`-u`) so logs are written in real time:
 
    ```bash
    # Email mode — polls the mailbox every CHECK_INTERVAL seconds (infinite loop)
-   python3 main.py
+   python3 -u main.py
 
    # URL mode — processes URLS_QUEUE.txt once and exits
-   python3 main.py --urls
+   python3 -u main.py --urls
    ```
 
    **`URLS_QUEUE.txt` format**: one URL per line, lines not starting with
