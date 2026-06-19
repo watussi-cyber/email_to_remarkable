@@ -214,7 +214,7 @@ def apply_academic_style(html_content, subject=None, sender=None, date=None, fon
 
 	# Suppression des éléments cachés (préheaders de newsletters, etc.)
 	# AVANT de retirer les attributs style, sinon ils deviennent visibles
-	hidden_pattern = r'display\s*:\s*none|visibility\s*:\s*hidden|max-height\s*:\s*0|font-size\s*:\s*0'
+	hidden_pattern = r'display\s*:\s*none|visibility\s*:\s*hidden|max-height\s*:\s*0'
 	for tag in ('div', 'span', 'p', 'td'):
 		html_content = re.sub(
 			rf'<{tag}\b[^>]*style\s*=\s*["\'][^"\']*(?:{hidden_pattern})[^"\']*["\'][^>]*>(?:(?!</?{tag}\b).)*?</{tag}>',
