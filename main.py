@@ -234,6 +234,12 @@ def apply_academic_style(html_content, subject=None, sender=None, date=None, fon
 	else:
 		# Pixels de tracking et espaceurs uniquement (images d'article conservées)
 		html_content = re.sub(r'<img\b[^>]*\b(?:width|height)\s*=\s*(?:["\']0*[1-8](?:px)?["\']|0*[1-8](?:px)?(?=[\s>]))[^>]*/?>', '', html_content, flags=re.IGNORECASE)
+	# <graphic> est le tag non-standard de trafilatura pour les images et blocs visuels.
+	# Les auto-fermants (<graphic src="..."/>) sont des placeholders vides → supprimés.
+	# Les autres (<graphic>texte</graphic>) contiennent du texte utile → convertis en <p>.
+	html_content = re.sub(r'<graphic\b[^>]*/>', '', html_content, flags=re.IGNORECASE)
+	html_content = re.sub(r'<graphic\b[^>]*>', '<p>', html_content, flags=re.IGNORECASE)
+	html_content = re.sub(r'</graphic>', '</p>', html_content, flags=re.IGNORECASE)
 	# Commentaires HTML, y compris les conditionnels Outlook <!--[if mso]>...
 	html_content = re.sub(r'<!--.*?-->', '', html_content, flags=re.DOTALL)
 	# Bourrage invisible des préheaders : longues séries de &zwnj;/&nbsp;/&shy;
