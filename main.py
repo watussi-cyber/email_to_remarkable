@@ -220,9 +220,14 @@ def apply_academic_style(html_content, subject=None, sender=None, date=None, fon
 			rf'<{tag}\b[^>]*style\s*=\s*["\'][^"\']*(?:{hidden_pattern})[^"\']*["\'][^>]*>(?:(?!</?{tag}\b).)*?</{tag}>',
 			'', html_content, flags=re.IGNORECASE | re.DOTALL)
 
-	# Pixels de tracking, espaceurs et séparateurs décoratifs :
-	# toute image dont une dimension fait 8 px ou moins
-	html_content = re.sub(r'<img\b[^>]*\b(?:width|height)\s*=\s*(?:["\']0*[1-8](?:px)?["\']|0*[1-8](?:px)?(?=[\s>]))[^>]*/?>', '', html_content, flags=re.IGNORECASE)
+	# Suppression de toutes les images : logos, décoratifs, tracking.
+	# Les images newsletter sont du bruit sur e-ink ; les CDN (Cloudflare AVIF/WebP)
+	# ne sont pas supportés par wkhtmltopdf → blocs cassés pleine-page.
+	html_content = re.sub(r'<img\b[^>]*/?>|<img\b[^>]*></img>', '', html_content, flags=re.IGNORECASE)
+	# Liens "Ouvrir dans le navigateur" / "View in browser" en tête de newsletter
+	html_content = re.sub(
+		r'<a\b[^>]*>[^<]*(?:Ouvrir|Open|View)\s+(?:dans\s+le\s+navigateur|in\s+(?:a\s+|your\s+)?browser)[^<]*</a>',
+		'', html_content, flags=re.IGNORECASE)
 	# Commentaires HTML, y compris les conditionnels Outlook <!--[if mso]>...
 	html_content = re.sub(r'<!--.*?-->', '', html_content, flags=re.DOTALL)
 	# Bourrage invisible des préheaders : longues séries de &zwnj;/&nbsp;/&shy;
@@ -273,6 +278,31 @@ def apply_academic_style(html_content, subject=None, sender=None, date=None, fon
 		if cleaned == html_content:
 			break
 		html_content = cleaned
+
+	# Suppression des sections "catalogue" (derniers articles publiés, archive)
+	# qui suivent le contenu éditorial et ajoutent des pages inutiles
+	for _marker in (r'Les\s+derniers\s+articles\s+publi', r'Recent\s+(?:posts|articles)'):
+		_m = re.search(_marker, html_content, re.IGNORECASE)
+		if _m:
+			_tag_start = html_content.rfind('<', 0, _m.start())
+			if _tag_start >= 0:
+				html_content = html_content[:_tag_start]
+			break
+
+	# Suppression des blocs publicitaires "En partenariat avec" → jusqu'à la prochaine section
+	_ad = re.search(r'[Ee]n\s+partenariat\s+avec\b', html_content, re.IGNORECASE)
+	if _ad:
+		_ad_start = html_content.rfind('<', 0, _ad.start())
+		_next_h = re.search(r'<\w[^>]*\bdata-acad-h=["\'][12]["\']', html_content[_ad.end():], re.IGNORECASE)
+		if _next_h is not None and _ad_start >= 0:
+			html_content = html_content[:_ad_start] + html_content[_ad.end() + _next_h.start():]
+
+	# Passe de nettoyage des conteneurs vides créés par les suppressions ci-dessus
+	for _ in range(3):
+		_cleaned = re.sub(empty_el, '', html_content, flags=re.IGNORECASE)
+		if _cleaned == html_content:
+			break
+		html_content = _cleaned
 
 	# Extraction du contenu du <body> si le document est complet
 	body_match = re.search(r'<body\b[^>]*>(.*?)</body>', html_content, flags=re.IGNORECASE | re.DOTALL)
